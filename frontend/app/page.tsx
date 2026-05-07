@@ -1,7 +1,17 @@
 "use client";
 
 import { useMemo, useState, type SyntheticEvent } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { LabeledInput } from "@/components/labeled-input";
 import { authClient, backendUrl } from "@/lib/auth-client";
+import { cn } from "@/lib/utils";
 
 type AuthMode = "sign-up" | "sign-in";
 
@@ -36,20 +46,20 @@ const initialCheck: BackendCheck = {
   message: "Not checked",
 };
 
-const statusClass = (state: BackendCheck["state"]): string => {
+const statusBadgeClass = (state: BackendCheck["state"]): string => {
   if (state === "authenticated") {
-    return "badge badgeSuccess";
+    return "bg-primary text-primary-foreground";
   }
 
   if (state === "unauthenticated") {
-    return "badge badgeWarning";
+    return "bg-amber-100 text-amber-900 dark:bg-amber-400/15 dark:text-amber-200";
   }
 
   if (state === "unreachable" || state === "error") {
-    return "badge badgeDanger";
+    return "bg-destructive/10 text-destructive dark:bg-destructive/20";
   }
 
-  return "badge badgeNeutral";
+  return "bg-secondary text-secondary-foreground";
 };
 
 const formatDetails = (value: unknown): string | null => {
@@ -215,149 +225,180 @@ const Home = () => {
   };
 
   return (
-    <main className="page">
-      <header className="topbar">
-        <div className="brand">
-          <h1>Webhook Demo</h1>
-          <p>Frontend on port 3000. Backend target: {backendUrl}</p>
-        </div>
-        <button
-          className="secondary"
-          type="button"
-          onClick={handleSignOut}
-          disabled={!session}
-        >
-          Sign out
-        </button>
-      </header>
-
-      <section className="grid">
-        <div className="panel">
-          <h2>Authentication</h2>
-          <div className="forms">
-            <form
-              className="form"
-              onSubmit={(event) => handleAuthSubmit(event, "sign-up")}
-            >
-              <label>
-                Name
-                <input
-                  name="name"
-                  autoComplete="name"
-                  defaultValue="Local User"
-                  required
-                />
-              </label>
-              <label>
-                Email
-                <input
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  name="password"
-                  type="password"
-                  autoComplete="new-password"
-                  minLength={8}
-                  required
-                />
-              </label>
-              <button type="submit" disabled={isSubmitting !== null}>
-                {isSubmitting === "sign-up" ? "Signing up" : "Sign up"}
-              </button>
-            </form>
-
-            <form
-              className="form"
-              onSubmit={(event) => handleAuthSubmit(event, "sign-in")}
-            >
-              <label>
-                Email
-                <input
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  name="password"
-                  type="password"
-                  autoComplete="current-password"
-                  minLength={8}
-                  required
-                />
-              </label>
-              <button type="submit" disabled={isSubmitting !== null}>
-                {isSubmitting === "sign-in" ? "Signing in" : "Sign in"}
-              </button>
-            </form>
+    <main className="min-h-screen bg-background px-4 py-8 text-foreground sm:px-6">
+      <div className="mx-auto grid w-full max-w-5xl gap-4">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="grid gap-1">
+            <h1 className="font-heading text-2xl font-medium tracking-normal">
+              Webhook Demo
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Frontend on port 3000. Backend target: {backendUrl}
+            </p>
           </div>
-          <p
-            className={message?.kind === "error" ? "message error" : "message"}
+          <Button
+            variant="outline"
+            type="button"
+            onClick={handleSignOut}
+            disabled={!session}
           >
-            {message?.text}
-          </p>
-        </div>
+            Sign out
+          </Button>
+        </header>
 
-        <aside className="panel">
-          <h2>Status</h2>
-          <ul className="statusList">
-            <li className="statusRow">
-              <span className="badge badgeSuccess">Running</span>
-              <span>Frontend</span>
-            </li>
-            <li className="statusRow">
-              <span className={statusClass(backendCheck.state)}>
-                {backendCheck.state}
-              </span>
-              <span>{backendCheck.message}</span>
-            </li>
-            <li className="statusRow">
-              <span
-                className={
-                  session ? "badge badgeSuccess" : "badge badgeNeutral"
-                }
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.8fr)]">
+          <Card>
+            <CardHeader>
+              <CardTitle>Authentication</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <form
+                  className="grid gap-4"
+                  onSubmit={(event) => handleAuthSubmit(event, "sign-up")}
+                >
+                  <LabeledInput
+                    id="sign-up-name"
+                    label="Name"
+                    name="name"
+                    autoComplete="name"
+                    defaultValue="Local User"
+                    required
+                  />
+                  <LabeledInput
+                    id="sign-up-email"
+                    label="Email"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    required
+                  />
+                  <LabeledInput
+                    id="sign-up-password"
+                    label="Password"
+                    name="password"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                  />
+                  <Button type="submit" disabled={isSubmitting !== null}>
+                    {isSubmitting === "sign-up" ? "Signing up" : "Sign up"}
+                  </Button>
+                </form>
+
+                <form
+                  className="grid content-start gap-4"
+                  onSubmit={(event) => handleAuthSubmit(event, "sign-in")}
+                >
+                  <LabeledInput
+                    id="sign-in-email"
+                    label="Email"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    required
+                  />
+                  <LabeledInput
+                    id="sign-in-password"
+                    label="Password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    minLength={8}
+                    required
+                  />
+                  <Button type="submit" disabled={isSubmitting !== null}>
+                    {isSubmitting === "sign-in" ? "Signing in" : "Sign in"}
+                  </Button>
+                </form>
+              </div>
+
+              <p
+                className={cn(
+                  "min-h-5 text-sm text-muted-foreground",
+                  message?.kind === "error" && "text-destructive",
+                )}
               >
-                {isPending ? "Loading" : session ? "Signed in" : "Signed out"}
-              </span>
-              <span>{session?.user?.email ?? "No active session"}</span>
-            </li>
-          </ul>
+                {message?.text}
+              </p>
+            </CardContent>
+          </Card>
 
-          <div className="actions">
-            <button
-              type="button"
-              onClick={checkBackend}
-              disabled={isCheckingBackend}
-            >
-              {isCheckingBackend ? "Checking" : "Check backend"}
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => refetch()}
-            >
-              Refresh session
-            </button>
-          </div>
+          <aside>
+            <Card>
+              <CardHeader>
+                <CardTitle>Status</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-4">
+                <ul className="grid gap-3">
+                  <li className="grid grid-cols-[7.5rem_1fr] items-center gap-3">
+                    <Badge className="bg-primary text-primary-foreground">
+                      Running
+                    </Badge>
+                    <span>Frontend</span>
+                  </li>
+                  <li className="grid grid-cols-[7.5rem_1fr] items-center gap-3">
+                    <Badge className={statusBadgeClass(backendCheck.state)}>
+                      {backendCheck.state}
+                    </Badge>
+                    <span>{backendCheck.message}</span>
+                  </li>
+                  <li className="grid grid-cols-[7.5rem_1fr] items-center gap-3">
+                    <Badge
+                      className={
+                        session
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-secondary text-secondary-foreground"
+                      }
+                    >
+                      {isPending
+                        ? "Loading"
+                        : session
+                          ? "Signed in"
+                          : "Signed out"}
+                    </Badge>
+                    <span>{session?.user?.email ?? "No active session"}</span>
+                  </li>
+                </ul>
 
-          {error ? <p className="message error">{error.message}</p> : null}
-          {backendDetails ? <pre>{backendDetails}</pre> : null}
-          {sessionDetails ? (
-            <pre>{sessionDetails}</pre>
-          ) : (
-            <p className="muted">Session: none</p>
-          )}
-        </aside>
-      </section>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    onClick={checkBackend}
+                    disabled={isCheckingBackend}
+                  >
+                    {isCheckingBackend ? "Checking" : "Check backend"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    onClick={() => refetch()}
+                  >
+                    Refresh session
+                  </Button>
+                </div>
+
+                {error ? (
+                  <p className="text-sm text-destructive">{error.message}</p>
+                ) : null}
+                {backendDetails ? (
+                  <pre className="max-h-72 overflow-auto rounded-lg border bg-muted/40 p-3 text-xs leading-6 text-foreground whitespace-pre-wrap">
+                    {backendDetails}
+                  </pre>
+                ) : null}
+                {sessionDetails ? (
+                  <pre className="max-h-72 overflow-auto rounded-lg border bg-muted/40 p-3 text-xs leading-6 text-foreground whitespace-pre-wrap">
+                    {sessionDetails}
+                  </pre>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Session: none</p>
+                )}
+              </CardContent>
+            </Card>
+          </aside>
+        </section>
+      </div>
     </main>
   );
 };
