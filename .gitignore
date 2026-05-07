@@ -1,0 +1,17 @@
+node_modules/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+.next/
+out/
+
+# Local SQLite data
+*.sqlite
+*.sqlite3
+*.db
+backend/data/
