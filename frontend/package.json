@@ -1,0 +1,26 @@
+{
+  "name": "@webhook-demo/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-auth": "^1.6.9",
+    "next": "^16.2.5",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  }
+}
