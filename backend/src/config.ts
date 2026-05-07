@@ -8,7 +8,7 @@ const DEFAULT_CLIENT_ORIGIN = "http://localhost:3000";
 const DEFAULT_AUTH_URL = "http://localhost:4000";
 const DEFAULT_DATABASE_PATH = "./data/auth.sqlite";
 
-function requiredSecret(): string {
+const requiredSecret = (): string => {
   const secret = process.env.BETTER_AUTH_SECRET;
 
   if (secret) {
@@ -20,18 +20,31 @@ function requiredSecret(): string {
   }
 
   return "dev-only-better-auth-secret-change-me";
-}
+};
 
-function parseTrustedOrigins(value: string | undefined): string[] {
+const parseTrustedOrigins = (value: string | undefined): string[] => {
   const origins = value ?? DEFAULT_CLIENT_ORIGIN;
 
   return origins
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
-}
+};
 
-const databasePath = resolve(process.cwd(), process.env.DATABASE_PATH ?? DEFAULT_DATABASE_PATH);
+const parsePort = (value: string | undefined): number => {
+  const port = Number(value ?? DEFAULT_PORT);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("PORT must be an integer between 1 and 65535.");
+  }
+
+  return port;
+};
+
+const databasePath = resolve(
+  process.cwd(),
+  process.env.DATABASE_PATH ?? DEFAULT_DATABASE_PATH,
+);
 mkdirSync(dirname(databasePath), { recursive: true });
 
 export const config = {
@@ -40,5 +53,5 @@ export const config = {
   clientOrigins: parseTrustedOrigins(process.env.CLIENT_ORIGIN),
   databasePath,
   host: process.env.HOST ?? DEFAULT_HOST,
-  port: Number(process.env.PORT ?? DEFAULT_PORT),
+  port: parsePort(process.env.PORT),
 };

@@ -11,16 +11,18 @@ import { config } from "./config.js";
 
 type BetterAuthSession = Awaited<ReturnType<typeof auth.api.getSession>>;
 
-async function getSession(request: FastifyRequest): Promise<BetterAuthSession> {
+const getSession = async (
+  request: FastifyRequest,
+): Promise<BetterAuthSession> => {
   return auth.api.getSession({
     headers: fromNodeHeaders(request.headers),
   });
-}
+};
 
-async function requireSession(
+const requireSession = async (
   request: FastifyRequest,
   reply: FastifyReply,
-): Promise<NonNullable<BetterAuthSession> | null> {
+): Promise<NonNullable<BetterAuthSession> | null> => {
   const session = await getSession(request);
 
   if (!session) {
@@ -29,9 +31,9 @@ async function requireSession(
   }
 
   return session;
-}
+};
 
-function toBetterAuthRequest(request: FastifyRequest): Request {
+const toBetterAuthRequest = (request: FastifyRequest): Request => {
   const url = new URL(request.url, config.authUrl);
   const init: RequestInit = {
     headers: fromNodeHeaders(request.headers),
@@ -43,17 +45,20 @@ function toBetterAuthRequest(request: FastifyRequest): Request {
   }
 
   return new Request(url, init);
-}
+};
 
-async function sendBetterAuthResponse(response: Response, reply: FastifyReply) {
+const sendBetterAuthResponse = async (
+  response: Response,
+  reply: FastifyReply,
+) => {
   reply.status(response.status);
   response.headers.forEach((value, key) => reply.header(key, value));
 
   const body = await response.text();
   return reply.send(body || null);
-}
+};
 
-export async function buildServer(): Promise<FastifyInstance> {
+export const buildServer = async (): Promise<FastifyInstance> => {
   const server = Fastify({ logger: true });
 
   await server.register(cors, {
@@ -100,9 +105,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   return server;
-}
+};
 
-async function startServer() {
+const startServer = async () => {
   const server = await buildServer();
 
   try {
@@ -111,7 +116,7 @@ async function startServer() {
     server.log.error(error);
     process.exit(1);
   }
-}
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await startServer();

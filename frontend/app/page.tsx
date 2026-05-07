@@ -36,7 +36,7 @@ const initialCheck: BackendCheck = {
   message: "Not checked",
 };
 
-function statusClass(state: BackendCheck["state"]) {
+const statusClass = (state: BackendCheck["state"]): string => {
   if (state === "authenticated") {
     return "badge badgeSuccess";
   }
@@ -50,17 +50,33 @@ function statusClass(state: BackendCheck["state"]) {
   }
 
   return "badge badgeNeutral";
-}
+};
 
-function formatDetails(value: unknown) {
+const formatDetails = (value: unknown): string | null => {
   if (!value) {
     return null;
   }
 
   return JSON.stringify(value, null, 2);
-}
+};
 
-export default function Home() {
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
+};
+
+const isMeResponse = (value: unknown): value is MeResponse => {
+  if (!isRecord(value) || typeof value.authenticated !== "boolean") {
+    return false;
+  }
+
+  if (value.user !== undefined && !isRecord(value.user)) {
+    return false;
+  }
+
+  return true;
+};
+
+const Home = () => {
   const { data: session, isPending, error, refetch } = authClient.useSession();
   const [message, setMessage] = useState<AuthMessage>(null);
   const [backendCheck, setBackendCheck] = useState<BackendCheck>(initialCheck);
@@ -74,10 +90,10 @@ export default function Home() {
     [backendCheck],
   );
 
-  async function handleAuthSubmit(
+  const handleAuthSubmit = async (
     event: SyntheticEvent<HTMLFormElement>,
     mode: AuthMode,
-  ) {
+  ) => {
     event.preventDefault();
     const form = event.currentTarget;
 
@@ -110,9 +126,9 @@ export default function Home() {
       text: mode === "sign-up" ? "Signed up." : "Signed in.",
     });
     await refetch();
-  }
+  };
 
-  async function handleSignOut() {
+  const handleSignOut = async () => {
     setMessage(null);
     setIsSubmitting(null);
 
@@ -132,9 +148,9 @@ export default function Home() {
     });
     setBackendCheck(initialCheck);
     await refetch();
-  }
+  };
 
-  async function checkBackend() {
+  const checkBackend = async () => {
     setIsCheckingBackend(true);
     setBackendCheck({
       state: "idle",
@@ -152,13 +168,21 @@ export default function Home() {
         : await response.text();
 
       if (response.ok) {
-        const data = body as MeResponse;
+        if (!isMeResponse(body)) {
+          setBackendCheck({
+            state: "error",
+            message: "Backend returned an unexpected response",
+            details: body,
+          });
+          return;
+        }
+
         setBackendCheck({
-          state: data.authenticated ? "authenticated" : "error",
-          message: data.authenticated
+          state: body.authenticated ? "authenticated" : "error",
+          message: body.authenticated
             ? "Backend reached with an active session"
             : "Backend reached without an authenticated response",
-          details: data,
+          details: body,
         });
         return;
       }
@@ -188,7 +212,7 @@ export default function Home() {
     } finally {
       setIsCheckingBackend(false);
     }
-  }
+  };
 
   return (
     <main className="page">
@@ -336,4 +360,6 @@ export default function Home() {
       </section>
     </main>
   );
-}
+};
+
+export default Home;
