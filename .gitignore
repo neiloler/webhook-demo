@@ -16,3 +16,4 @@ out/
 *.sqlite3
 *.db
 backend/data/
+cookies.txt

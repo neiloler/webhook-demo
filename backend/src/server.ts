@@ -1,37 +1,17 @@
 import cors from "@fastify/cors";
 import { pathToFileURL } from "node:url";
 import Fastify, {
+  type FastifyError,
   type FastifyInstance,
   type FastifyReply,
   type FastifyRequest,
 } from "fastify";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "./auth.js";
+import { requireSession } from "./auth-session.js";
 import { config } from "./config.js";
-
-type BetterAuthSession = Awaited<ReturnType<typeof auth.api.getSession>>;
-
-const getSession = async (
-  request: FastifyRequest,
-): Promise<BetterAuthSession> => {
-  return auth.api.getSession({
-    headers: fromNodeHeaders(request.headers),
-  });
-};
-
-const requireSession = async (
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<NonNullable<BetterAuthSession> | null> => {
-  const session = await getSession(request);
-
-  if (!session) {
-    reply.status(401).send({ error: "Unauthorized" });
-    return null;
-  }
-
-  return session;
-};
+import { initializeWebhookSchema } from "./database.js";
+import { registerWebhookRoutes } from "./webhook-routes.js";
 
 const toBetterAuthRequest = (request: FastifyRequest): Request => {
   const url = new URL(request.url, config.authUrl);
@@ -60,6 +40,24 @@ const sendBetterAuthResponse = async (
 
 export const buildServer = async (): Promise<FastifyInstance> => {
   const server = Fastify({ logger: true });
+  initializeWebhookSchema();
+
+  server.setErrorHandler((error: FastifyError, request, reply) => {
+    const statusCode = error.statusCode ?? 500;
+
+    if (statusCode >= 400 && statusCode < 500) {
+      return reply.status(statusCode).send({
+        code: statusCode === 413 ? "REQUEST_BODY_TOO_LARGE" : "BAD_REQUEST",
+        error: error.message,
+      });
+    }
+
+    request.log.error({ error }, "Request failed");
+    return reply.status(500).send({
+      code: "INTERNAL_SERVER_ERROR",
+      error: "Internal server error",
+    });
+  });
 
   await server.register(cors, {
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -103,6 +101,8 @@ export const buildServer = async (): Promise<FastifyInstance> => {
       user: session.user,
     };
   });
+
+  registerWebhookRoutes(server, requireSession);
 
   return server;
 };
