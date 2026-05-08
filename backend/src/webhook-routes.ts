@@ -19,9 +19,11 @@ const DELIVERY_STATUSES = [
 ] as const;
 
 const DELIVERY_ATTEMPT_STATUSES = ["pending", "succeeded", "failed"] as const;
+const TRAFFIC_SCOPES = ["mine", "all"] as const;
 
 type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 type DeliveryAttemptStatus = (typeof DELIVERY_ATTEMPT_STATUSES)[number];
+type TrafficScope = (typeof TRAFFIC_SCOPES)[number];
 
 type SessionGuard = (
   request: FastifyRequest,
@@ -165,19 +167,27 @@ type PublicIngestParams = {
   uniqueIdentifier: string;
 };
 
+type TrafficScopeQuery = {
+  scope?: string;
+};
+
+type DashboardSummaryQuery = TrafficScopeQuery;
+
+type IngestEndpointListQuery = TrafficScopeQuery;
+
 type InboundEventListQuery = {
   ingestEndpointId?: string;
-};
+} & TrafficScopeQuery;
 
 type WebhookSubscriptionListQuery = {
   ingestEndpointId?: string;
-};
+} & TrafficScopeQuery;
 
 type WebhookDeliveryListQuery = {
   inboundEventId?: string;
   status?: string;
   webhookSubscriptionId?: string;
-};
+} & TrafficScopeQuery;
 
 type SubscriptionRetryBody = {
   inboundEventId?: unknown;
@@ -194,6 +204,7 @@ type DeliveryTarget = {
 };
 
 const deliveryStatusSet = new Set<string>(DELIVERY_STATUSES);
+const trafficScopeSet = new Set<string>(TRAFFIC_SCOPES);
 const ingestRateLimitWindows = new Map<string, RateLimitWindow>();
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -206,6 +217,10 @@ const isNonEmptyRecord = (value: unknown): value is Record<string, unknown> => {
 
 const isDeliveryStatus = (value: string): value is DeliveryStatus => {
   return deliveryStatusSet.has(value);
+};
+
+const isTrafficScope = (value: string): value is TrafficScope => {
+  return trafficScopeSet.has(value);
 };
 
 const sendError = (
@@ -320,6 +335,33 @@ const readQueryText = (value: unknown): string | undefined => {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const readTrafficScope = (value: unknown): TrafficScope | null => {
+  const scope = readQueryText(value) ?? "mine";
+  return isTrafficScope(scope) ? scope : null;
+};
+
+const scopedWhere = ({
+  clause,
+  scope,
+}: {
+  clause?: string;
+  scope: TrafficScope;
+}): string => {
+  const conditions = [
+    ...(scope === "mine" ? ["user_id = @userId"] : []),
+    ...(clause ? [clause] : []),
+  ];
+
+  return conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+};
+
+const scopedParams = (
+  scope: TrafficScope,
+  userId: string,
+): Record<string, string> => {
+  return scope === "mine" ? { userId } : {};
 };
 
 const slugify = (value: string): string => {
@@ -570,6 +612,18 @@ const findWebhookDeliveryForUser = (
       `,
     )
     .get({ id, userId });
+};
+
+const findWebhookDelivery = (id: string): WebhookDeliveryRow | undefined => {
+  return database
+    .prepare<{ id: string }, WebhookDeliveryRow>(
+      `
+        SELECT *
+        FROM webhook_deliveries
+        WHERE id = @id
+      `,
+    )
+    .get({ id });
 };
 
 const findInboundEventForUser = (
@@ -1070,15 +1124,22 @@ export const registerWebhookRoutes = (
   server: FastifyInstance,
   requireSession: SessionGuard,
 ): void => {
-  server.get("/api/dashboard/summary", async (request, reply) => {
+  server.get<{ Querystring: DashboardSummaryQuery }>("/api/dashboard/summary", async (request, reply) => {
     const session = await requireSession(request, reply);
 
     if (!session) {
       return;
     }
 
+    const scope = readTrafficScope(request.query.scope);
+
+    if (!scope) {
+      return sendError(reply, 400, "INVALID_TRAFFIC_SCOPE", "Unknown traffic scope.");
+    }
+
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const userParams = { userId: session.user.id };
+    const params = scopedParams(scope, session.user.id);
+    const sinceParams = { ...params, since };
 
     return {
       summary: {
@@ -1086,54 +1147,49 @@ export const registerWebhookRoutes = (
           `
             SELECT COUNT(*) AS count
             FROM ingest_endpoints
-            WHERE user_id = @userId
-              AND is_active = 1
+            ${scopedWhere({ clause: "is_active = 1", scope })}
           `,
-          userParams,
+          params,
         ),
         failedDeliveries: readCount(
           `
             SELECT COUNT(*) AS count
             FROM webhook_deliveries
-            WHERE user_id = @userId
-              AND status = 'failed'
+            ${scopedWhere({ clause: "status = 'failed'", scope })}
           `,
-          userParams,
+          params,
         ),
         inboundEventsLast24Hours: readCount(
           `
             SELECT COUNT(*) AS count
             FROM inbound_events
-            WHERE user_id = @userId
-              AND received_at >= @since
+            ${scopedWhere({ clause: "received_at >= @since", scope })}
           `,
-          { since, userId: session.user.id },
+          sinceParams,
         ),
         pendingOrRetryableDeliveries: readCount(
           `
             SELECT COUNT(*) AS count
             FROM webhook_deliveries
-            WHERE user_id = @userId
-              AND status IN ('pending', 'retrying', 'failed')
+            ${scopedWhere({ clause: "status IN ('pending', 'retrying', 'failed')", scope })}
           `,
-          userParams,
+          params,
         ),
         totalIngestEndpoints: readCount(
           `
             SELECT COUNT(*) AS count
             FROM ingest_endpoints
-            WHERE user_id = @userId
+            ${scopedWhere({ scope })}
           `,
-          userParams,
+          params,
         ),
         webhookDeliveriesLast24Hours: readCount(
           `
             SELECT COUNT(*) AS count
             FROM webhook_deliveries
-            WHERE user_id = @userId
-              AND created_at >= @since
+            ${scopedWhere({ clause: "created_at >= @since", scope })}
           `,
-          { since, userId: session.user.id },
+          sinceParams,
         ),
       },
     };
@@ -1273,23 +1329,29 @@ export const registerWebhookRoutes = (
     return reply.status(201).send({ ingestEndpoint: mapIngestEndpoint(row) });
   });
 
-  server.get("/api/ingest-endpoints", async (request, reply) => {
+  server.get<{ Querystring: IngestEndpointListQuery }>("/api/ingest-endpoints", async (request, reply) => {
     const session = await requireSession(request, reply);
 
     if (!session) {
       return;
     }
 
+    const scope = readTrafficScope(request.query.scope);
+
+    if (!scope) {
+      return sendError(reply, 400, "INVALID_TRAFFIC_SCOPE", "Unknown traffic scope.");
+    }
+
     const rows = database
-      .prepare<{ userId: string }, IngestEndpointRow>(
+      .prepare<Record<string, string>, IngestEndpointRow>(
         `
           SELECT *
           FROM ingest_endpoints
-          WHERE user_id = @userId
+          ${scopedWhere({ scope })}
           ORDER BY created_at DESC
         `,
       )
-      .all({ userId: session.user.id });
+      .all(scopedParams(scope, session.user.id));
 
     return { ingestEndpoints: rows.map(mapIngestEndpoint) };
   });
@@ -1586,33 +1648,33 @@ export const registerWebhookRoutes = (
         return;
       }
 
-      const ingestEndpointId = readQueryText(request.query.ingestEndpointId);
+      const scope = readTrafficScope(request.query.scope);
 
-      const rows = ingestEndpointId
-        ? database
-            .prepare<
-              { ingestEndpointId: string; userId: string },
-              WebhookSubscriptionRow
-            >(
-              `
-                SELECT *
-                FROM webhook_subscriptions
-                WHERE user_id = @userId
-                  AND ingest_endpoint_id = @ingestEndpointId
-                ORDER BY created_at DESC
-              `,
-            )
-            .all({ ingestEndpointId, userId: session.user.id })
-        : database
-            .prepare<{ userId: string }, WebhookSubscriptionRow>(
-              `
-                SELECT *
-                FROM webhook_subscriptions
-                WHERE user_id = @userId
-                ORDER BY created_at DESC
-              `,
-            )
-            .all({ userId: session.user.id });
+      if (!scope) {
+        return sendError(reply, 400, "INVALID_TRAFFIC_SCOPE", "Unknown traffic scope.");
+      }
+
+      const ingestEndpointId = readQueryText(request.query.ingestEndpointId);
+      const conditions = [
+        ...(scope === "mine" ? ["user_id = @userId"] : []),
+        ...(ingestEndpointId ? ["ingest_endpoint_id = @ingestEndpointId"] : []),
+      ];
+      const params: Record<string, string> = scopedParams(scope, session.user.id);
+
+      if (ingestEndpointId) {
+        params.ingestEndpointId = ingestEndpointId;
+      }
+
+      const rows = database
+        .prepare<Record<string, string>, WebhookSubscriptionRow>(
+          `
+            SELECT *
+            FROM webhook_subscriptions
+            ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
+            ORDER BY created_at DESC
+          `,
+        )
+        .all(params);
 
       return { webhookSubscriptions: rows.map(mapWebhookSubscription) };
     },
@@ -1850,32 +1912,34 @@ export const registerWebhookRoutes = (
       return;
     }
 
-    const ingestEndpointId = readQueryText(request.query.ingestEndpointId);
+    const scope = readTrafficScope(request.query.scope);
 
-    const rows = ingestEndpointId
-      ? database
-          .prepare<{ ingestEndpointId: string; userId: string }, InboundEventRow>(
-            `
-              SELECT *
-              FROM inbound_events
-              WHERE user_id = @userId
-                AND ingest_endpoint_id = @ingestEndpointId
-              ORDER BY received_at DESC
-              LIMIT 100
-            `,
-          )
-          .all({ ingestEndpointId, userId: session.user.id })
-      : database
-          .prepare<{ userId: string }, InboundEventRow>(
-            `
-              SELECT *
-              FROM inbound_events
-              WHERE user_id = @userId
-              ORDER BY received_at DESC
-              LIMIT 100
-            `,
-          )
-          .all({ userId: session.user.id });
+    if (!scope) {
+      return sendError(reply, 400, "INVALID_TRAFFIC_SCOPE", "Unknown traffic scope.");
+    }
+
+    const ingestEndpointId = readQueryText(request.query.ingestEndpointId);
+    const conditions = [
+      ...(scope === "mine" ? ["user_id = @userId"] : []),
+      ...(ingestEndpointId ? ["ingest_endpoint_id = @ingestEndpointId"] : []),
+    ];
+    const params: Record<string, string> = scopedParams(scope, session.user.id);
+
+    if (ingestEndpointId) {
+      params.ingestEndpointId = ingestEndpointId;
+    }
+
+    const rows = database
+      .prepare<Record<string, string>, InboundEventRow>(
+        `
+          SELECT *
+          FROM inbound_events
+          ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
+          ORDER BY received_at DESC
+          LIMIT 100
+        `,
+      )
+      .all(params);
 
     return { inboundEvents: rows.map(mapInboundEvent) };
   });
@@ -1914,6 +1978,12 @@ export const registerWebhookRoutes = (
         return;
       }
 
+      const scope = readTrafficScope(request.query.scope);
+
+      if (!scope) {
+        return sendError(reply, 400, "INVALID_TRAFFIC_SCOPE", "Unknown traffic scope.");
+      }
+
       const inboundEventId = readQueryText(request.query.inboundEventId);
       const webhookSubscriptionId = readQueryText(request.query.webhookSubscriptionId);
       const status = readQueryText(request.query.status);
@@ -1922,8 +1992,10 @@ export const registerWebhookRoutes = (
         return sendError(reply, 400, "INVALID_DELIVERY_STATUS", "Unknown delivery status.");
       }
 
-      const conditions = ["user_id = @userId"];
-      const params: Record<string, string> = { userId: session.user.id };
+      const conditions = [
+        ...(scope === "mine" ? ["user_id = @userId"] : []),
+      ];
+      const params: Record<string, string> = scopedParams(scope, session.user.id);
 
       if (inboundEventId) {
         conditions.push("inbound_event_id = @inboundEventId");
@@ -1945,7 +2017,7 @@ export const registerWebhookRoutes = (
           `
             SELECT *
             FROM webhook_deliveries
-            WHERE ${conditions.join(" AND ")}
+            ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
             ORDER BY created_at DESC
             LIMIT 100
           `,
@@ -1977,7 +2049,7 @@ export const registerWebhookRoutes = (
     return { webhookDelivery: mapWebhookDelivery(row) };
   });
 
-  server.get<{ Params: IdParams }>(
+  server.get<{ Params: IdParams; Querystring: TrafficScopeQuery }>(
     "/api/webhook-deliveries/:id/attempts",
     async (request, reply) => {
       const session = await requireSession(request, reply);
@@ -1986,7 +2058,15 @@ export const registerWebhookRoutes = (
         return;
       }
 
-      const delivery = findWebhookDeliveryForUser(request.params.id, session.user.id);
+      const scope = readTrafficScope(request.query.scope);
+
+      if (!scope) {
+        return sendError(reply, 400, "INVALID_TRAFFIC_SCOPE", "Unknown traffic scope.");
+      }
+
+      const delivery = scope === "mine"
+        ? findWebhookDeliveryForUser(request.params.id, session.user.id)
+        : findWebhookDelivery(request.params.id);
 
       if (!delivery) {
         return sendError(

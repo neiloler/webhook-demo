@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "backend",
-    "frontend"
+    "frontend",
+    "test-harness"
   ],
   "scripts": {
     "dev:backend": "npm run dev -w backend",
@@ -14,6 +15,10 @@
     "build:frontend": "npm run build -w frontend",
     "start:frontend": "npm run start -w frontend",
     "typecheck:frontend": "npm run typecheck -w frontend",
+    "dev:harness": "npm run dev -w test-harness --",
+    "build:harness": "npm run build -w test-harness",
+    "start:harness": "npm run start -w test-harness --",
+    "typecheck:harness": "npm run typecheck -w test-harness",
     "auth:migrate": "npm run auth:migrate -w backend"
   }
 }

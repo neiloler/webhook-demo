@@ -53,6 +53,7 @@ import {
   type DashboardSummary,
   type InboundEvent,
   type IngestEndpoint,
+  type TrafficScope,
   type WebhookDelivery,
   type WebhookDeliveryAttempt,
   type WebhookSubscription,
@@ -145,6 +146,14 @@ const emptyDashboardData: DashboardData = {
   webhookDeliveryAttempts: {},
   webhookSubscriptions: [],
 };
+
+const trafficScopes = [
+  { label: "My traffic", value: "mine" },
+  { label: "All traffic", value: "all" },
+] satisfies {
+  label: string;
+  value: TrafficScope;
+}[];
 
 const summaryItems = [
   {
@@ -263,14 +272,23 @@ const tableCellClass = "border-b px-3 py-2 align-middle";
 const Home = () => {
   return (
     <ProtectedScreen>
-      {(session) => <Dashboard userEmail={session.user.email} />}
+      {(session) => (
+        <Dashboard userEmail={session.user.email} userId={session.user.id} />
+      )}
     </ProtectedScreen>
   );
 };
 
-const Dashboard = ({ userEmail }: { userEmail: string }) => {
+const Dashboard = ({
+  userEmail,
+  userId,
+}: {
+  userEmail: string;
+  userId: string;
+}) => {
   const router = useRouter();
   const [data, setData] = useState<DashboardData>(emptyDashboardData);
+  const [trafficScope, setTrafficScope] = useState<TrafficScope>("mine");
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -280,6 +298,7 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
   const [subscriptionForm, setSubscriptionForm] =
     useState<SubscriptionFormState | null>(null);
   const [detailSelection, setDetailSelection] = useState<DetailSelection>(null);
+  const canManageTraffic = trafficScope === "mine";
 
   const endpointById = useMemo(() => {
     return new Map(data.ingestEndpoints.map((endpoint) => [endpoint.id, endpoint]));
@@ -460,16 +479,19 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
         eventsResponse,
         deliveriesResponse,
       ] = await Promise.all([
-        getDashboardSummary(),
-        listIngestEndpoints(),
-        listWebhookSubscriptions(),
-        listInboundEvents(),
-        listWebhookDeliveries(),
+        getDashboardSummary(trafficScope),
+        listIngestEndpoints(trafficScope),
+        listWebhookSubscriptions(trafficScope),
+        listInboundEvents(trafficScope),
+        listWebhookDeliveries(trafficScope),
       ]);
 
       const attemptsEntries = await Promise.all(
         deliveriesResponse.webhookDeliveries.map(async (delivery) => {
-          const attemptsResponse = await listWebhookDeliveryAttempts(delivery.id);
+          const attemptsResponse = await listWebhookDeliveryAttempts(
+            delivery.id,
+            trafficScope,
+          );
           return [delivery.id, attemptsResponse.webhookDeliveryAttempts] as const;
         }),
       );
@@ -489,7 +511,7 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
       setIsInitialLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [trafficScope]);
 
   useEffect(() => {
     void loadDashboard(true);
@@ -502,6 +524,12 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
 
     return () => window.clearInterval(intervalId);
   }, [loadDashboard]);
+
+  useEffect(() => {
+    setEndpointForm(null);
+    setSubscriptionForm(null);
+    setDetailSelection(null);
+  }, [trafficScope]);
 
   const runAction = async ({
     action,
@@ -695,6 +723,31 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
           </nav>
         </header>
 
+        <section className="flex flex-wrap items-center justify-between gap-3">
+          <div
+            aria-label="Traffic scope"
+            className="inline-flex rounded-full border bg-muted/30 p-1"
+            role="tablist"
+          >
+            {trafficScopes.map((scope) => (
+              <Button
+                aria-selected={trafficScope === scope.value}
+                key={scope.value}
+                onClick={() => setTrafficScope(scope.value)}
+                role="tab"
+                size="sm"
+                type="button"
+                variant={trafficScope === scope.value ? "default" : "ghost"}
+              >
+                {scope.label}
+              </Button>
+            ))}
+          </div>
+          {trafficScope === "all" ? (
+            <Badge variant="outline">Read-only cross-user view</Badge>
+          ) : null}
+        </section>
+
         <MessageBanner message={message} />
 
         {loadError ? (
@@ -724,18 +777,18 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
 
             <section className="grid gap-3">
               <SectionHeader
-                action={
+                action={canManageTraffic ? (
                   <ActionButton
                     icon={Add01Icon}
                     label="Add ingest endpoint"
                     onClick={startCreateEndpoint}
                   />
-                }
+                ) : undefined}
                 icon={<HugeiconsIcon aria-hidden icon={WebhookIcon} size={16} />}
                 title="Ingest Endpoints"
               />
 
-              {endpointForm ? (
+              {endpointForm && canManageTraffic ? (
                 <EndpointForm
                   form={endpointForm}
                   isSubmitting={pendingAction === "endpoint-form"}
@@ -776,6 +829,11 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                                 <span className="font-mono text-xs text-muted-foreground">
                                   {endpoint.slug}
                                 </span>
+                                {trafficScope === "all" ? (
+                                  <span className="font-mono text-xs text-muted-foreground">
+                                    Owner {shortId(endpoint.userId)}
+                                  </span>
+                                ) : null}
                               </div>
                             </td>
                             <td className={cn(tableCellClass, "max-w-80")}>
@@ -836,11 +894,13 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                                     })
                                   }
                                 />
-                                <ActionButton
-                                  icon={PencilEdit02Icon}
-                                  label="Edit ingest endpoint"
-                                  onClick={() => startEditEndpoint(endpoint)}
-                                />
+                                {canManageTraffic && endpoint.userId === userId ? (
+                                  <ActionButton
+                                    icon={PencilEdit02Icon}
+                                    label="Edit ingest endpoint"
+                                    onClick={() => startEditEndpoint(endpoint)}
+                                  />
+                                ) : null}
                               </div>
                             </td>
                           </tr>
@@ -854,19 +914,19 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
 
             <section className="grid gap-3">
               <SectionHeader
-                action={
+                action={canManageTraffic ? (
                   <ActionButton
                     disabled={data.ingestEndpoints.length === 0}
                     icon={Add01Icon}
                     label="Add webhook subscription"
                     onClick={startCreateSubscription}
                   />
-                }
+                ) : undefined}
                 icon={<HugeiconsIcon aria-hidden icon={WebhookIcon} size={16} />}
                 title="Webhook Subscriptions"
               />
 
-              {subscriptionForm ? (
+              {subscriptionForm && canManageTraffic ? (
                 <SubscriptionForm
                   endpoints={data.ingestEndpoints}
                   form={subscriptionForm}
@@ -906,9 +966,16 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                         return (
                           <tr key={subscription.id}>
                             <td className={tableCellClass}>
-                              <span className="font-mono text-xs">
-                                {shortId(subscription.id)}
-                              </span>
+                              <div className="grid gap-1">
+                                <span className="font-mono text-xs">
+                                  {shortId(subscription.id)}
+                                </span>
+                                {trafficScope === "all" ? (
+                                  <span className="font-mono text-xs text-muted-foreground">
+                                    Owner {shortId(subscription.userId)}
+                                  </span>
+                                ) : null}
+                              </div>
                             </td>
                             <td className={tableCellClass}>
                               {endpoint?.name ?? shortId(subscription.ingestEndpointId)}
@@ -943,6 +1010,8 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                               <div className="flex items-center gap-1">
                                 <ActionButton
                                   disabled={
+                                    !canManageTraffic ||
+                                    subscription.userId !== userId ||
                                     !latestEvent ||
                                     pendingAction === retryKey ||
                                     !subscription.isActive
@@ -976,11 +1045,13 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                                     })
                                   }
                                 />
-                                <ActionButton
-                                  icon={PencilEdit02Icon}
-                                  label="Edit webhook subscription"
-                                  onClick={() => startEditSubscription(subscription)}
-                                />
+                                {canManageTraffic && subscription.userId === userId ? (
+                                  <ActionButton
+                                    icon={PencilEdit02Icon}
+                                    label="Edit webhook subscription"
+                                    onClick={() => startEditSubscription(subscription)}
+                                  />
+                                ) : null}
                               </div>
                             </td>
                           </tr>
@@ -1025,9 +1096,16 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                         return (
                           <tr key={event.id}>
                             <td className={tableCellClass}>
-                              <span className="font-mono text-xs">
-                                {shortId(event.id)}
-                              </span>
+                              <div className="grid gap-1">
+                                <span className="font-mono text-xs">
+                                  {shortId(event.id)}
+                                </span>
+                                {trafficScope === "all" ? (
+                                  <span className="font-mono text-xs text-muted-foreground">
+                                    Owner {shortId(event.userId)}
+                                  </span>
+                                ) : null}
+                              </div>
                             </td>
                             <td className={tableCellClass}>
                               {endpoint?.name ?? shortId(event.ingestEndpointId)}
@@ -1054,7 +1132,11 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                             <td className={tableCellClass}>
                               <div className="flex items-center gap-1">
                                 <ActionButton
-                                  disabled={pendingAction === retryKey}
+                                  disabled={
+                                    !canManageTraffic ||
+                                    event.userId !== userId ||
+                                    pendingAction === retryKey
+                                  }
                                   icon={ReplayIcon}
                                   label="Replay inbound event"
                                   onClick={() =>
@@ -1130,9 +1212,16 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                         return (
                           <tr key={delivery.id}>
                             <td className={tableCellClass}>
-                              <span className="font-mono text-xs">
-                                {shortId(delivery.id)}
-                              </span>
+                              <div className="grid gap-1">
+                                <span className="font-mono text-xs">
+                                  {shortId(delivery.id)}
+                                </span>
+                                {trafficScope === "all" ? (
+                                  <span className="font-mono text-xs text-muted-foreground">
+                                    Owner {shortId(delivery.userId)}
+                                  </span>
+                                ) : null}
+                              </div>
                             </td>
                             <td className={tableCellClass}>
                               <span className="font-mono text-xs">
@@ -1176,7 +1265,11 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                             <td className={tableCellClass}>
                               <div className="flex items-center gap-1">
                                 <ActionButton
-                                  disabled={pendingAction === retryKey}
+                                  disabled={
+                                    !canManageTraffic ||
+                                    delivery.userId !== userId ||
+                                    pendingAction === retryKey
+                                  }
                                   icon={ArrowReloadHorizontalIcon}
                                   label="Retry webhook delivery"
                                   onClick={() =>
@@ -1197,7 +1290,9 @@ const Dashboard = ({ userEmail }: { userEmail: string }) => {
                                     })
                                   }
                                 />
-                                {subscription ? (
+                                {subscription &&
+                                canManageTraffic &&
+                                subscription.userId === userId ? (
                                   <ActionButton
                                     icon={PencilEdit02Icon}
                                     label="Edit related webhook subscription"

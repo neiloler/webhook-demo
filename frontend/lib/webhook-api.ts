@@ -9,6 +9,8 @@ export type DashboardSummary = {
   webhookDeliveriesLast24Hours: number;
 };
 
+export type TrafficScope = "mine" | "all";
+
 export type IngestEndpoint = {
   id: string;
   userId: string;
@@ -182,12 +184,20 @@ const requestBackend = async <ResponseBody>(
 
 const toJsonBody = (value: unknown): string => JSON.stringify(value);
 
-export const getDashboardSummary = async () => {
-  return requestBackend<{ summary: DashboardSummary }>("/api/dashboard/summary");
+const scopeQuery = (scope: TrafficScope): string => {
+  return new URLSearchParams({ scope }).toString();
 };
 
-export const listIngestEndpoints = async () => {
-  return requestBackend<{ ingestEndpoints: IngestEndpoint[] }>("/api/ingest-endpoints");
+export const getDashboardSummary = async (scope: TrafficScope = "mine") => {
+  return requestBackend<{ summary: DashboardSummary }>(
+    `/api/dashboard/summary?${scopeQuery(scope)}`,
+  );
+};
+
+export const listIngestEndpoints = async (scope: TrafficScope = "mine") => {
+  return requestBackend<{ ingestEndpoints: IngestEndpoint[] }>(
+    `/api/ingest-endpoints?${scopeQuery(scope)}`,
+  );
 };
 
 export const createIngestEndpoint = async (
@@ -212,9 +222,9 @@ export const updateIngestEndpoint = async (
   );
 };
 
-export const listWebhookSubscriptions = async () => {
+export const listWebhookSubscriptions = async (scope: TrafficScope = "mine") => {
   return requestBackend<{ webhookSubscriptions: WebhookSubscription[] }>(
-    "/api/webhook-subscriptions",
+    `/api/webhook-subscriptions?${scopeQuery(scope)}`,
   );
 };
 
@@ -244,19 +254,24 @@ export const updateWebhookSubscription = async (
   );
 };
 
-export const listInboundEvents = async () => {
-  return requestBackend<{ inboundEvents: InboundEvent[] }>("/api/inbound-events");
-};
-
-export const listWebhookDeliveries = async () => {
-  return requestBackend<{ webhookDeliveries: WebhookDelivery[] }>(
-    "/api/webhook-deliveries",
+export const listInboundEvents = async (scope: TrafficScope = "mine") => {
+  return requestBackend<{ inboundEvents: InboundEvent[] }>(
+    `/api/inbound-events?${scopeQuery(scope)}`,
   );
 };
 
-export const listWebhookDeliveryAttempts = async (deliveryId: string) => {
+export const listWebhookDeliveries = async (scope: TrafficScope = "mine") => {
+  return requestBackend<{ webhookDeliveries: WebhookDelivery[] }>(
+    `/api/webhook-deliveries?${scopeQuery(scope)}`,
+  );
+};
+
+export const listWebhookDeliveryAttempts = async (
+  deliveryId: string,
+  scope: TrafficScope = "mine",
+) => {
   return requestBackend<{ webhookDeliveryAttempts: WebhookDeliveryAttempt[] }>(
-    `/api/webhook-deliveries/${encodeURIComponent(deliveryId)}/attempts`,
+    `/api/webhook-deliveries/${encodeURIComponent(deliveryId)}/attempts?${scopeQuery(scope)}`,
   );
 };
 

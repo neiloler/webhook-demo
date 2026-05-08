@@ -42,6 +42,12 @@ is intentionally unauthenticated for this epic, but it rejects unknown or
 inactive endpoints, limits payload bodies to 64 KB, and rate-limits ingestion to
 100 requests per second.
 
+Dashboard and traffic list endpoints default to the signed-in user's traffic.
+For the admin dashboard's cross-user traffic view, pass `scope=all` to
+`/api/dashboard/summary`, `/api/ingest-endpoints`, `/api/webhook-subscriptions`,
+`/api/inbound-events`, `/api/webhook-deliveries`, and delivery attempt list
+requests.
+
 Epic 5 creates new webhook-domain tables. If old local Epic 3 webhook data is
 disposable, delete the local SQLite file configured by `DATABASE_PATH` and run
 the backend again to start from a fresh schema.
@@ -50,6 +56,10 @@ the backend again to start from a fresh schema.
 
 These examples assume you have already signed in and stored Better Auth cookies
 in `cookies.txt`.
+
+For repeatable local webhook testing, use the Node CLI in
+[`test-harness`](../test-harness/README.md). For manual `curl` sender and `nc`
+receiver recipes, see [`docs/webhook-test-harness.md`](../docs/webhook-test-harness.md).
 
 Create an ingest endpoint:
 
