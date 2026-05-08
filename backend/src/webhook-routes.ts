@@ -9,7 +9,6 @@ const PUBLIC_INGEST_BODY_LIMIT_BYTES = 64 * 1024;
 const DELIVERY_TIMEOUT_MS = 3_000;
 const RESPONSE_BODY_SAMPLE_LIMIT = 4_096;
 const INBOUND_EVENT_STATUS = "accepted";
-const DELIVERY_ATTEMPT_NUMBER = 1;
 
 const DELIVERY_STATUSES = [
   "pending",
@@ -86,6 +85,14 @@ type WebhookDeliveryAttemptRow = {
   error_message: string | null;
   started_at: string;
   finished_at: string | null;
+};
+
+type CountRow = {
+  count: number;
+};
+
+type AttemptNumberRow = {
+  attemptNumber: number;
 };
 
 type IngestEndpoint = {
@@ -172,6 +179,10 @@ type WebhookDeliveryListQuery = {
   webhookSubscriptionId?: string;
 };
 
+type SubscriptionRetryBody = {
+  inboundEventId?: unknown;
+};
+
 type RateLimitWindow = {
   count: number;
   startedAt: number;
@@ -204,6 +215,15 @@ const sendError = (
   error: string,
 ) => {
   return reply.status(status).send({ code, error });
+};
+
+const readCount = (
+  sql: string,
+  params: Record<string, string>,
+): number => {
+  return (
+    database.prepare<Record<string, string>, CountRow>(sql).get(params)?.count ?? 0
+  );
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -552,6 +572,134 @@ const findWebhookDeliveryForUser = (
     .get({ id, userId });
 };
 
+const findInboundEventForUser = (
+  id: string,
+  userId: string,
+): InboundEventRow | undefined => {
+  return database
+    .prepare<{ id: string; userId: string }, InboundEventRow>(
+      `
+        SELECT *
+        FROM inbound_events
+        WHERE id = @id
+          AND user_id = @userId
+      `,
+    )
+    .get({ id, userId });
+};
+
+const findWebhookDeliveryByEventAndSubscription = (
+  inboundEventId: string,
+  webhookSubscriptionId: string,
+  userId: string,
+): WebhookDeliveryRow | undefined => {
+  return database
+    .prepare<
+      { inboundEventId: string; userId: string; webhookSubscriptionId: string },
+      WebhookDeliveryRow
+    >(
+      `
+        SELECT *
+        FROM webhook_deliveries
+        WHERE inbound_event_id = @inboundEventId
+          AND webhook_subscription_id = @webhookSubscriptionId
+          AND user_id = @userId
+      `,
+    )
+    .get({ inboundEventId, userId, webhookSubscriptionId });
+};
+
+const createWebhookDelivery = ({
+  inboundEventId,
+  timestamp,
+  userId,
+  webhookSubscriptionId,
+}: {
+  inboundEventId: string;
+  timestamp: string;
+  userId: string;
+  webhookSubscriptionId: string;
+}): WebhookDeliveryRow => {
+  const id = randomUUID();
+
+  database
+    .prepare<{
+      createdAt: string;
+      id: string;
+      inboundEventId: string;
+      status: DeliveryStatus;
+      updatedAt: string;
+      userId: string;
+      webhookSubscriptionId: string;
+    }>(
+      `
+        INSERT INTO webhook_deliveries (
+          id,
+          inbound_event_id,
+          webhook_subscription_id,
+          user_id,
+          status,
+          next_attempt_at,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          @id,
+          @inboundEventId,
+          @webhookSubscriptionId,
+          @userId,
+          @status,
+          NULL,
+          @createdAt,
+          @updatedAt
+        )
+      `,
+    )
+    .run({
+      createdAt: timestamp,
+      id,
+      inboundEventId,
+      status: "pending",
+      updatedAt: timestamp,
+      userId,
+      webhookSubscriptionId,
+    });
+
+  const row = findWebhookDeliveryForUser(id, userId);
+
+  if (!row) {
+    throw new Error("Webhook delivery was not created.");
+  }
+
+  return row;
+};
+
+const findOrCreateWebhookDelivery = ({
+  inboundEventId,
+  timestamp,
+  userId,
+  webhookSubscriptionId,
+}: {
+  inboundEventId: string;
+  timestamp: string;
+  userId: string;
+  webhookSubscriptionId: string;
+}): WebhookDeliveryRow => {
+  return (
+    findWebhookDeliveryByEventAndSubscription(
+      inboundEventId,
+      webhookSubscriptionId,
+      userId,
+    ) ??
+    createWebhookDelivery({
+      inboundEventId,
+      timestamp,
+      userId,
+      webhookSubscriptionId,
+    })
+  );
+};
+
 const listActiveSubscriptionsForEndpoint = (
   ingestEndpointId: string,
 ): WebhookSubscriptionRow[] => {
@@ -685,6 +833,7 @@ const updateDeliveryStatus = (
       `
         UPDATE webhook_deliveries
         SET status = @status,
+          next_attempt_at = NULL,
           updated_at = @updatedAt
         WHERE id = @id
       `,
@@ -726,6 +875,17 @@ const recordDeliveryAttempt = database.transaction(
     targetUrl: string;
     updatedDeliveryStatus: DeliveryStatus;
   }): void => {
+    const attemptNumber =
+      database
+        .prepare<{ webhookDeliveryId: string }, AttemptNumberRow>(
+          `
+            SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attemptNumber
+            FROM webhook_delivery_attempts
+            WHERE webhook_delivery_id = @webhookDeliveryId
+          `,
+        )
+        .get({ webhookDeliveryId: deliveryId })?.attemptNumber ?? 1;
+
     database
       .prepare<{
         attemptNumber: number;
@@ -776,7 +936,7 @@ const recordDeliveryAttempt = database.transaction(
         `,
       )
       .run({
-        attemptNumber: DELIVERY_ATTEMPT_NUMBER,
+        attemptNumber,
         errorMessage,
         finishedAt,
         id: attemptId,
@@ -796,6 +956,7 @@ const recordDeliveryAttempt = database.transaction(
         `
           UPDATE webhook_deliveries
           SET status = @status,
+            next_attempt_at = NULL,
             updated_at = @updatedAt
           WHERE id = @id
         `,
@@ -875,10 +1036,109 @@ const attemptWebhookDelivery = async ({
   });
 };
 
+const attemptStoredDelivery = async ({
+  delivery,
+  endpoint,
+  inboundEvent,
+  subscription,
+}: {
+  delivery: WebhookDeliveryRow;
+  endpoint: IngestEndpointRow;
+  inboundEvent: InboundEventRow;
+  subscription: WebhookSubscriptionRow;
+}): Promise<WebhookDeliveryRow> => {
+  await attemptWebhookDelivery({
+    delivery: {
+      deliveryId: delivery.id,
+      subscription,
+    },
+    endpoint,
+    inboundEventId: inboundEvent.id,
+    payloadJson: inboundEvent.payload,
+  });
+
+  const updated = findWebhookDeliveryForUser(delivery.id, delivery.user_id);
+
+  if (!updated) {
+    throw new Error("Webhook delivery was not found after retry.");
+  }
+
+  return updated;
+};
+
 export const registerWebhookRoutes = (
   server: FastifyInstance,
   requireSession: SessionGuard,
 ): void => {
+  server.get("/api/dashboard/summary", async (request, reply) => {
+    const session = await requireSession(request, reply);
+
+    if (!session) {
+      return;
+    }
+
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const userParams = { userId: session.user.id };
+
+    return {
+      summary: {
+        activeIngestEndpoints: readCount(
+          `
+            SELECT COUNT(*) AS count
+            FROM ingest_endpoints
+            WHERE user_id = @userId
+              AND is_active = 1
+          `,
+          userParams,
+        ),
+        failedDeliveries: readCount(
+          `
+            SELECT COUNT(*) AS count
+            FROM webhook_deliveries
+            WHERE user_id = @userId
+              AND status = 'failed'
+          `,
+          userParams,
+        ),
+        inboundEventsLast24Hours: readCount(
+          `
+            SELECT COUNT(*) AS count
+            FROM inbound_events
+            WHERE user_id = @userId
+              AND received_at >= @since
+          `,
+          { since, userId: session.user.id },
+        ),
+        pendingOrRetryableDeliveries: readCount(
+          `
+            SELECT COUNT(*) AS count
+            FROM webhook_deliveries
+            WHERE user_id = @userId
+              AND status IN ('pending', 'retrying', 'failed')
+          `,
+          userParams,
+        ),
+        totalIngestEndpoints: readCount(
+          `
+            SELECT COUNT(*) AS count
+            FROM ingest_endpoints
+            WHERE user_id = @userId
+          `,
+          userParams,
+        ),
+        webhookDeliveriesLast24Hours: readCount(
+          `
+            SELECT COUNT(*) AS count
+            FROM webhook_deliveries
+            WHERE user_id = @userId
+              AND created_at >= @since
+          `,
+          { since, userId: session.user.id },
+        ),
+      },
+    };
+  });
+
   server.post("/api/ingest-endpoints", async (request, reply) => {
     const session = await requireSession(request, reply);
 
@@ -1749,6 +2009,241 @@ export const registerWebhookRoutes = (
         .all({ webhookDeliveryId: delivery.id });
 
       return { webhookDeliveryAttempts: rows.map(mapWebhookDeliveryAttempt) };
+    },
+  );
+
+  server.post<{ Params: IdParams }>(
+    "/api/webhook-deliveries/:id/retry",
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+
+      if (!session) {
+        return;
+      }
+
+      const delivery = findWebhookDeliveryForUser(request.params.id, session.user.id);
+
+      if (!delivery) {
+        return sendError(
+          reply,
+          404,
+          "WEBHOOK_DELIVERY_NOT_FOUND",
+          "Webhook delivery not found.",
+        );
+      }
+
+      const inboundEvent = findInboundEventForUser(delivery.inbound_event_id, session.user.id);
+
+      if (!inboundEvent) {
+        return sendError(reply, 404, "INBOUND_EVENT_NOT_FOUND", "Inbound event not found.");
+      }
+
+      const subscription = findWebhookSubscriptionForUser(
+        delivery.webhook_subscription_id,
+        session.user.id,
+      );
+
+      if (!subscription) {
+        return sendError(
+          reply,
+          404,
+          "WEBHOOK_SUBSCRIPTION_NOT_FOUND",
+          "Webhook subscription not found.",
+        );
+      }
+
+      if (subscription.is_active === 0) {
+        return sendError(
+          reply,
+          400,
+          "WEBHOOK_SUBSCRIPTION_INACTIVE",
+          "Webhook subscription is inactive.",
+        );
+      }
+
+      const endpoint = findIngestEndpointForUser(
+        inboundEvent.ingest_endpoint_id,
+        session.user.id,
+      );
+
+      if (!endpoint) {
+        return sendError(reply, 404, "INGEST_ENDPOINT_NOT_FOUND", "Ingest endpoint not found.");
+      }
+
+      if (endpoint.is_active === 0) {
+        return sendError(
+          reply,
+          400,
+          "INGEST_ENDPOINT_INACTIVE",
+          "Ingest endpoint is inactive.",
+        );
+      }
+
+      const updated = await attemptStoredDelivery({
+        delivery,
+        endpoint,
+        inboundEvent,
+        subscription,
+      });
+
+      return { webhookDelivery: mapWebhookDelivery(updated) };
+    },
+  );
+
+  server.post<{ Params: IdParams }>(
+    "/api/inbound-events/:id/reprocess",
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+
+      if (!session) {
+        return;
+      }
+
+      const inboundEvent = findInboundEventForUser(request.params.id, session.user.id);
+
+      if (!inboundEvent) {
+        return sendError(reply, 404, "INBOUND_EVENT_NOT_FOUND", "Inbound event not found.");
+      }
+
+      const endpoint = findIngestEndpointForUser(
+        inboundEvent.ingest_endpoint_id,
+        session.user.id,
+      );
+
+      if (!endpoint) {
+        return sendError(reply, 404, "INGEST_ENDPOINT_NOT_FOUND", "Ingest endpoint not found.");
+      }
+
+      if (endpoint.is_active === 0) {
+        return sendError(
+          reply,
+          400,
+          "INGEST_ENDPOINT_INACTIVE",
+          "Ingest endpoint is inactive.",
+        );
+      }
+
+      const subscriptions = listActiveSubscriptionsForEndpoint(endpoint.id);
+      const timestamp = nowIso();
+      const deliveries = subscriptions.map((subscription) =>
+        findOrCreateWebhookDelivery({
+          inboundEventId: inboundEvent.id,
+          timestamp,
+          userId: session.user.id,
+          webhookSubscriptionId: subscription.id,
+        }),
+      );
+
+      const updatedDeliveries = await Promise.all(
+        deliveries.map((delivery, index) =>
+          attemptStoredDelivery({
+            delivery,
+            endpoint,
+            inboundEvent,
+            subscription: subscriptions[index],
+          }),
+        ),
+      );
+
+      return {
+        attemptedDeliveryCount: updatedDeliveries.length,
+        webhookDeliveries: updatedDeliveries.map(mapWebhookDelivery),
+      };
+    },
+  );
+
+  server.post<{ Body: SubscriptionRetryBody; Params: IdParams }>(
+    "/api/webhook-subscriptions/:id/retry",
+    async (request, reply) => {
+      const session = await requireSession(request, reply);
+
+      if (!session) {
+        return;
+      }
+
+      if (!isRecord(request.body)) {
+        return sendError(reply, 400, "INVALID_REQUEST_BODY", "Expected a JSON object.");
+      }
+
+      const inboundEventId = readRequiredText(request.body, "inboundEventId");
+
+      if (!inboundEventId) {
+        return sendError(
+          reply,
+          400,
+          "INBOUND_EVENT_ID_REQUIRED",
+          "A non-empty inboundEventId is required.",
+        );
+      }
+
+      const subscription = findWebhookSubscriptionForUser(request.params.id, session.user.id);
+
+      if (!subscription) {
+        return sendError(
+          reply,
+          404,
+          "WEBHOOK_SUBSCRIPTION_NOT_FOUND",
+          "Webhook subscription not found.",
+        );
+      }
+
+      if (subscription.is_active === 0) {
+        return sendError(
+          reply,
+          400,
+          "WEBHOOK_SUBSCRIPTION_INACTIVE",
+          "Webhook subscription is inactive.",
+        );
+      }
+
+      const inboundEvent = findInboundEventForUser(inboundEventId, session.user.id);
+
+      if (!inboundEvent) {
+        return sendError(reply, 404, "INBOUND_EVENT_NOT_FOUND", "Inbound event not found.");
+      }
+
+      if (inboundEvent.ingest_endpoint_id !== subscription.ingest_endpoint_id) {
+        return sendError(
+          reply,
+          400,
+          "INBOUND_EVENT_SUBSCRIPTION_MISMATCH",
+          "Inbound event does not belong to this subscription's ingest endpoint.",
+        );
+      }
+
+      const endpoint = findIngestEndpointForUser(
+        subscription.ingest_endpoint_id,
+        session.user.id,
+      );
+
+      if (!endpoint) {
+        return sendError(reply, 404, "INGEST_ENDPOINT_NOT_FOUND", "Ingest endpoint not found.");
+      }
+
+      if (endpoint.is_active === 0) {
+        return sendError(
+          reply,
+          400,
+          "INGEST_ENDPOINT_INACTIVE",
+          "Ingest endpoint is inactive.",
+        );
+      }
+
+      const delivery = findOrCreateWebhookDelivery({
+        inboundEventId: inboundEvent.id,
+        timestamp: nowIso(),
+        userId: session.user.id,
+        webhookSubscriptionId: subscription.id,
+      });
+
+      const updated = await attemptStoredDelivery({
+        delivery,
+        endpoint,
+        inboundEvent,
+        subscription,
+      });
+
+      return { webhookDelivery: mapWebhookDelivery(updated) };
     },
   );
 };
