@@ -5,6 +5,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  color-scheme: light;
   --muted: oklch(0.97 0.001 106.424);
   --border: oklch(0.923 0.003 48.717);
   --accent: oklch(0.97 0.001 106.424);
@@ -83,6 +84,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.147 0.004 49.25);
   --foreground: oklch(0.985 0.001 106.423);
   --card: oklch(0.216 0.006 56.043);
